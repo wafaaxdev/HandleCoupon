@@ -1,0 +1,555 @@
+﻿Exportfile for AOT version 1.0 or later
+Formatversion: 1
+
+***Element: JOB
+
+; Microsoft Dynamics AX Job: eavNewHandleCoupon_Remain_V2 unloaded
+; --------------------------------------------------------------------------------
+  JOBVERSION 1
+  
+  SOURCE #eavNewHandleCoupon_Remain_V2
+    #//Total Amount field per coupon here "TotalAmountCouponItems" based on RemainPrice
+    #// Ratio amount field here "RatioPricePerCoupon" based on RemainPrice
+    #static void eavNewHandleCoupon_Remain_V2(Args _args)
+    #{
+    #   ibsOrderTable                   _ibsOrderTable;
+    #    ibsOrderDocument                ibsOrderDocument,ibsOrderDocumentCoupon;
+    #    ibsOrderParameters              ibsOrderParameters;
+    #    ibsOrderDocumentCoupons         ibsOrderDocumentCoupons;
+    #    ibsCustCoupons                  ibsCustCoupons;
+    #    ibsOrderTrans                   ibsOrderTrans,ibsOrderTransSumPrice;
+    #    EavOrderDocumentCouponsTrans    OrderDocumentCouponsTrans,OrderDocumentCouponsTransSumPrice,OrderDocumentCouponsTransRemainPrice; // new Table
+    #    EavCustCouponItem               CustCouponItem;
+    #    ibsOrderProcess_Complete        release;
+    #    ;
+    #
+    #
+    #    select firstOnly _ibsOrderTable;
+    #    if(_ibsOrderTable.RecId)
+    #    {
+    #        while select forupdate * from ibsOrderDocument
+    #            where ibsOrderDocument.OrderId == _ibsOrderTable.OrderId
+    #                  && ibsOrderDocument.DocumentTypeId != ibsOrderParameters.DocumentTypeIdCoupon // EAV Syc DU 11.11.2013 keine Dokumente vom Typ GUT
+    #        {
+    #
+    #
+    #            while select forupdate * from ibsOrderDocumentCoupons
+    #                order by Sorting ,RecId
+    #                where ibsOrderDocumentCoupons.OrderId    == _ibsOrderTable.OrderId
+    #                      && (!ibsOrderDocumentCoupons.EAVUsedInDocumentId || ibsOrderDocumentCoupons.EAVUsedInDocumentId == ibsOrderDocument.OrderDocumentId) // EAV Syc DU Gutschein immer dem gleichen Dokument zuweisen
+    #                join ibsOrderDocumentCoupon // OrderDocument with this coupon
+    #                    where    ibsOrderDocumentCoupon.OrderDocumentId     == ibsOrderDocumentCoupons.DocumentId
+    #                          && ibsOrderDocumentCoupon.OrderId             == _ibsOrderTable.OrderId
+    #                          && ibsOrderDocumentCoupon.CustAccountDocument == ibsOrderDocument.CustAccountDocument
+    #                          && ibsOrderDocumentCoupon.ExtraInvoiceId      == ibsOrderDocument.ExtraInvoiceId
+    #                          && (ibsOrderDocumentCoupon.OrderDocumentId    == ibsOrderDocument.OrderDocumentId || ibsOrderDocumentCoupon.DocumentTypeId == ibsOrderParameters.DocumentTypeIdCoupon)
+    #            {
+    #                try
+    #                {
+    #                    //ttsbegin;
+    #                    ibsCustCoupons = ibsCustCoupons::find(ibsOrderDocumentCoupons.CouponId);
+    #                    //-1 if Coupon uses itemList
+    #                    //-2 if yes
+    #                    if(ibsCustCoupons.RecId && ibsCustCoupons.eavUseItemList())
+    #                    {
+    #                        //2.1 if inKlu ==
+    #                        if(ibsCustCoupons.EavInventListGroupIdInclude)
+    #                        {
+    #                            //1- Claculate total amount for all items per coupon
+    #                            // select sum(LineAmount) from ibsOrderTransSumPrice
+    #                            //     where ibsOrderTransSumPrice.OrderId         ==  ibsOrderDocumentCoupons.OrderId &&
+    #                            //         ibsOrderTransSumPrice.OrderDocumentId ==  ibsOrderDocumentCoupons.DocumentId &&
+    #                            //         ibsOrderTransSumPrice.OrderTransKind  !=  ibsOrderTransKind::Coupon
+    #                            //     join  CustCouponItem
+    #                            //     where CustCouponItem.ItemId                 ==  ibsOrderTransSumPrice.ItemId &&
+    #                            //         CustCouponItem.CustCouponId           ==  ibsCustCoupons.CouponId &&
+    #                            //         CustCouponItem.IncludeExclude         ==  EavIncludeExclude::Include;
+    #                            info(strfmt('total coupon amount = %1',ibsOrderTransSumPrice.LineAmount));
+    #                            // 2- while select Items from ibsOrderTrans join CustCouponItem inKlu
+    #                            while select ibsOrderTrans
+    #                                where ibsOrderTrans.OrderId         ==  ibsOrderDocumentCoupons.OrderId &&
+    #                                    ibsOrderTrans.OrderDocumentId ==  ibsOrderDocumentCoupons.DocumentId &&
+    #                                    ibsOrderTrans.OrderTransKind  !=  ibsOrderTransKind::Coupon
+    #                                join  CustCouponItem
+    #                                where CustCouponItem.ItemId         ==  ibsOrderTrans.ItemId &&
+    #                                    CustCouponItem.CustCouponId   ==  ibsCustCoupons.CouponId &&
+    #                                    CustCouponItem.IncludeExclude ==  EavIncludeExclude::Include
+    #                            {
+    #                                if(!EavOrderDocumentCouponsTrans::exist(ibsOrderTrans.OrderTransId,ibsOrderDocumentCoupons.CouponId))
+    #                                {
+    #                                    // 3-select or while select NewTable to insert items  :(
+    #                                    select forUpdate OrderDocumentCouponsTrans
+    #                                        order by recId Desc
+    #                                        where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId  ;
+    #                                    // 4- TransId False
+    #                                    if(!OrderDocumentCouponsTrans.OrderTransId)
+    #                                    {
+    #                                        //this is our 1st coupon will be applied for this document,so OrginalPricee == RemainPrice
+    #                                        //insert
+    #                                        ttsbegin;
+    #                                        OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                        OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                        OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                        OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTrans.OrginalPrice;
+    #
+    #                                        OrderDocumentCouponsTrans.insert();
+    #                                        ttscommit;
+    #                                        //Remain fields will be updated code out of ibsOrderTrans loop
+    #                                    }
+    #                                    // 5- TransId true
+    #                                    else
+    #                                    {
+    #                                        // 6- TransId True with same Coupon
+    #                                        // if(OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                        //     OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentcoupons.CouponId)
+    #                                        // {
+    #                                        //     //this is not 1st coupon,so
+    #                                        //     //update or ignore
+    #                                        //     //calculate RemainPrice
+    #                                        //     OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                        //     OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                        //     OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                        //     OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #
+    #                                        //     //RemainPrice
+    #                                        //     select OrderDocumentCouponsTransRemainPrice
+    #                                        //         order by RecId Desc
+    #                                        //         where OrderDocumentCouponsTransRemainPrice.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                        //                 OrderDocumentCouponsTransRemainPrice.RecId        <= OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                        //                 (OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                        //                 OrderDocumentCouponsTransRemainPrice.CouponId      == OrderDocumentCouponsTrans.CouponId);
+    #
+    #                                        //     OrderDocumentCouponsTrans.RemainPrice                       =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #                                        //     OrderDocumentCouponsTrans.TotalAmountCouponItems            =  ibsOrderTransSumPrice.LineAmount;//ibsOrderDocumentcoupons.EavWafCouponTotalItemBalance; //total price for all items in coupon
+    #                                        //     OrderDocumentCouponsTrans.RatioPricePerCoupon               =  OrderDocumentCouponsTrans.OrginalPrice / OrderDocumentCouponsTrans.TotalAmountCouponItems;
+    #                                        //     OrderDocumentCouponsTrans.DiscAmountUsed                    =  ibsCustCoupons::find(ibsOrderDocumentcoupons.CouponId).AmountMST * OrderDocumentCouponsTrans.RatioPricePerCoupon * -1 ; // * -1
+    #                                        //     OrderDocumentCouponsTrans.AmountUsed                        =  OrderDocumentCouponsTrans.RemainPrice + OrderDocumentCouponsTrans.DiscAmountUsed;
+    #
+    #                                        //     OrderDocumentCouponsTrans.update();
+    #                                        // }
+    #                                        // 7- TransId True with diffrent Coupon , so get last coupon applied to this item to get last RemainPrice
+    #                                        //else
+    #                                        //{
+    #                                        //insert
+    #                                        //calculate RemainPrice
+    #                                        ttsbegin;
+    #                                        OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                        OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                        OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                        OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #
+    #                                        //RemainPrice
+    #                                        select OrderDocumentCouponsTransRemainPrice
+    #                                            order by RecId Desc
+    #                                            where OrderDocumentCouponsTransRemainPrice.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                                    OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId;
+    #
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #                                        OrderDocumentCouponsTrans.insert();
+    #                                        ttscommit;
+    #                                        //Remaining fields will be updated code out of ibsOrderTrans loop
+    #                                        //}
+    #                                    }
+    #                                }
+    #                                //if TransId & CouponId Exists
+    #                                //Update new Table
+    #                                else
+    #                                {
+    #                                    //1st select to update original price
+    #                                    select forUpdate OrderDocumentCouponsTrans
+    #                                        where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                              OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentCoupons.CouponId;
+    #                                    ttsbegin;
+    #                                    //OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                    //OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                    //OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                    OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #                                    OrderDocumentCouponsTrans.update();
+    #                                    ttscommit;
+    #
+    #                                    //2nd select to get remainPrice from orignalPrice in recId == recId
+    #                                    select forUpdate OrderDocumentCouponsTrans
+    #                                        where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                              OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentCoupons.CouponId;
+    #                                    ttsbegin;
+    #                                    //RemainPrice
+    #                                     select OrderDocumentCouponsTransRemainPrice
+    #                                         order by RecId Desc
+    #                                         where OrderDocumentCouponsTransRemainPrice.OrderTransId == OrderDocumentCouponsTrans.OrderTransId && //ibsOrderTrans.OrderTransId &&
+    #                                                 OrderDocumentCouponsTransRemainPrice.RecId      <  OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                                 (OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                                 OrderDocumentCouponsTransRemainPrice.CouponId      == OrderDocumentCouponsTrans.CouponId);
+    #                                    if(OrderDocumentCouponsTransRemainPrice.RecId)
+    #                                    {
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #                                    }
+    #                                    else
+    #                                    {
+    #                                        select OrderDocumentCouponsTransRemainPrice
+    #                                             order by RecId Desc
+    #                                             where OrderDocumentCouponsTransRemainPrice.OrderTransId == OrderDocumentCouponsTrans.OrderTransId && //ibsOrderTrans.OrderTransId &&
+    #                                                   OrderDocumentCouponsTransRemainPrice.RecId        ==  OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                                   (OrderDocumentCouponsTransRemainPrice.CouponId    != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                                    OrderDocumentCouponsTransRemainPrice.CouponId    == OrderDocumentCouponsTrans.CouponId);
+    #
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.OrginalPrice;
+    #                                    }
+    #
+    #                                    OrderDocumentCouponsTrans.update();
+    #                                    ttscommit;
+    #                                }
+    #                            }//end of ibsOrderTrans loop
+    #                            //calculate total using RemainPrice
+    #                            select sum(RemainPrice) from OrderDocumentCouponsTransSumPrice
+    #                                where OrderDocumentCouponsTransSumPrice.CouponId == ibsOrderDocumentcoupons.CouponId;
+    #                            //Update new Table using RemainPrice
+    #                            while select forUpdate OrderDocumentCouponsTrans
+    #                                where OrderDocumentCouponsTrans.CouponId == ibsOrderDocumentcoupons.CouponId
+    #                            {
+    #                                ttsbegin;
+    #                                OrderDocumentCouponsTrans.TotalAmountCouponItems        =  OrderDocumentCouponsTransSumPrice.RemainPrice;//ibsOrderDocumentcoupons.EavWafCouponTotalItemBalance; //total price for all items in coupon
+    #                                OrderDocumentCouponsTrans.RatioPricePerCoupon           =  OrderDocumentCouponsTrans.RemainPrice / OrderDocumentCouponsTrans.TotalAmountCouponItems;
+    #                                OrderDocumentCouponsTrans.DiscAmountUsed                =  ibsCustCoupons::find(ibsOrderDocumentcoupons.CouponId).AmountMST * OrderDocumentCouponsTrans.RatioPricePerCoupon * -1 ; // * -1
+    #                                OrderDocumentCouponsTrans.AmountUsed                    =  OrderDocumentCouponsTrans.RemainPrice + OrderDocumentCouponsTrans.DiscAmountUsed;
+    #
+    #                                OrderDocumentCouponsTrans.update();
+    #                                ttscommit;
+    #                            }
+    #                        }
+    #                        //2.2 if ExKlu !=
+    #                        if(ibsCustCoupons.EavInventListGroupIdExclude)
+    #                        {
+    #                            //1- Claculate total amount for all items per coupon
+    #                            // select sum(LineAmount) from ibsOrderTransSumPrice
+    #                            //     where ibsOrderTransSumPrice.OrderId         ==  ibsOrderDocumentCoupons.OrderId &&
+    #                            //         ibsOrderTransSumPrice.OrderDocumentId ==  ibsOrderDocumentCoupons.DocumentId &&
+    #                            //         ibsOrderTransSumPrice.OrderTransKind  !=  ibsOrderTransKind::Coupon
+    #                            //     Notexists join  CustCouponItem
+    #                            //     where CustCouponItem.ItemId                 ==  ibsOrderTransSumPrice.ItemId &&
+    #                            //         CustCouponItem.CustCouponId           ==  ibsCustCoupons.CouponId &&
+    #                            //         CustCouponItem.IncludeExclude         ==  EavIncludeExclude::Exclude;
+    #                                    info(strfmt('total coupon amount = %1',ibsOrderTransSumPrice.LineAmount));
+    #                            //2- while select Items from ibsOrderTrans join CustCouponItem ExKlu
+    #                            while select ibsOrderTrans
+    #                                where ibsOrderTrans.OrderId         ==  ibsOrderDocumentCoupons.OrderId &&
+    #                                    ibsOrderTrans.OrderDocumentId ==  ibsOrderDocumentCoupons.DocumentId &&
+    #                                    ibsOrderTrans.OrderTransKind  !=  ibsOrderTransKind::Coupon
+    #                                Notexists join  CustCouponItem
+    #                                where CustCouponItem.ItemId         ==  ibsOrderTrans.ItemId &&
+    #                                    CustCouponItem.CustCouponId   ==  ibsCustCoupons.CouponId &&
+    #                                    CustCouponItem.IncludeExclude ==  EavIncludeExclude::Exclude
+    #                            {
+    #                                if(!EavOrderDocumentCouponsTrans::exist(ibsOrderTrans.OrderTransId,ibsOrderDocumentCoupons.CouponId))
+    #                                {
+    #                                    // 3-select or while select NewTable to insert items  :(
+    #                                    select forUpdate OrderDocumentCouponsTrans
+    #                                        order by recId Desc
+    #                                        where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId  ;
+    #                                    // 4- TransId False
+    #                                    if(!OrderDocumentCouponsTrans.OrderTransId)
+    #                                    {
+    #                                        //this is our 1st coupon will be applied for this document,so OrginalPricee == RemainPrice
+    #                                        //insert
+    #                                        ttsbegin;
+    #                                        OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                        OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                        OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                        OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTrans.OrginalPrice;
+    #
+    #                                        OrderDocumentCouponsTrans.insert();
+    #                                        ttscommit;
+    #                                        //Remain fields will be updated code out of ibsOrderTrans loop
+    #                                    }
+    #                                    // 5- TransId true
+    #                                    else
+    #                                    {
+    #                                        // 6- TransId True with same Coupon
+    #                                        // if(OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                        //     OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentcoupons.CouponId)
+    #                                        // {
+    #                                        //     //this is not 1st coupon,so
+    #                                        //     //update or ignore
+    #                                        //     //calculate RemainPrice
+    #                                        //     OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                        //     OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                        //     OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                        //     OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #
+    #                                        //     //RemainPrice
+    #                                        //     select OrderDocumentCouponsTransRemainPrice
+    #                                        //         order by RecId Desc
+    #                                        //         where OrderDocumentCouponsTransRemainPrice.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                        //                 OrderDocumentCouponsTransRemainPrice.RecId        <= OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                        //                 (OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                        //                 OrderDocumentCouponsTransRemainPrice.CouponId      == OrderDocumentCouponsTrans.CouponId);
+    #
+    #                                        //     OrderDocumentCouponsTrans.RemainPrice                       =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #                                        //     OrderDocumentCouponsTrans.TotalAmountCouponItems            =  ibsOrderTransSumPrice.LineAmount;//ibsOrderDocumentcoupons.EavWafCouponTotalItemBalance; //total price for all items in coupon
+    #                                        //     OrderDocumentCouponsTrans.RatioPricePerCoupon               =  OrderDocumentCouponsTrans.OrginalPrice / OrderDocumentCouponsTrans.TotalAmountCouponItems;
+    #                                        //     OrderDocumentCouponsTrans.DiscAmountUsed                    =  ibsCustCoupons::find(ibsOrderDocumentcoupons.CouponId).AmountMST * OrderDocumentCouponsTrans.RatioPricePerCoupon * -1 ; // * -1
+    #                                        //     OrderDocumentCouponsTrans.AmountUsed                        =  OrderDocumentCouponsTrans.RemainPrice + OrderDocumentCouponsTrans.DiscAmountUsed;
+    #
+    #                                        //     OrderDocumentCouponsTrans.update();
+    #                                        // }
+    #                                        // 7- TransId True with diffrent Coupon , so get last coupon applied to this item to get last RemainPrice
+    #                                        //else
+    #                                        //{
+    #                                        //insert
+    #                                        //calculate RemainPrice
+    #                                        ttsbegin;
+    #                                        OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                        OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                        OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                        OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #
+    #                                        //RemainPrice
+    #                                        select OrderDocumentCouponsTransRemainPrice
+    #                                            order by RecId Desc
+    #                                            where OrderDocumentCouponsTransRemainPrice.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                                    OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId;
+    #
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #
+    #                                        OrderDocumentCouponsTrans.insert();
+    #                                        ttscommit;
+    #                                        //Remain fields will be updated code out of ibsOrderTrans loop
+    #                                        //}
+    #                                    }
+    #                                }
+    #                                //if TransId & CouponId Exists
+    #                                //Update new Table
+    #                                else
+    #                                {
+    #                                    //1st select to update original price
+    #                                    select forUpdate OrderDocumentCouponsTrans
+    #                                        where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                              OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentCoupons.CouponId;
+    #                                    ttsbegin;
+    #                                    //OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                    //OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                    //OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                    OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #                                    OrderDocumentCouponsTrans.update();
+    #                                    ttscommit;
+    #
+    #                                    //2nd select to get remainPrice from orignalPrice in recId == recId
+    #                                    select forUpdate OrderDocumentCouponsTrans
+    #                                        where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                              OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentCoupons.CouponId;
+    #                                    ttsbegin;
+    #                                    //RemainPrice
+    #                                    // 1- if this coupon is not the 1st in this Doc
+    #                                     select OrderDocumentCouponsTransRemainPrice
+    #                                             order by RecId Desc
+    #                                             where OrderDocumentCouponsTransRemainPrice.OrderTransId == OrderDocumentCouponsTrans.OrderTransId && //ibsOrderTrans.OrderTransId &&
+    #                                                     OrderDocumentCouponsTransRemainPrice.RecId      <  OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                                     (OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                                     OrderDocumentCouponsTransRemainPrice.CouponId      == OrderDocumentCouponsTrans.CouponId);
+    #                                    if(OrderDocumentCouponsTransRemainPrice.RecId)
+    #                                    {
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #                                    }
+    #                                    //2- if this coupon is 1st in this Doc
+    #                                    else
+    #                                    {
+    #                                        select OrderDocumentCouponsTransRemainPrice
+    #                                             order by RecId Desc
+    #                                             where OrderDocumentCouponsTransRemainPrice.OrderTransId == OrderDocumentCouponsTrans.OrderTransId && //ibsOrderTrans.OrderTransId &&
+    #                                                   OrderDocumentCouponsTransRemainPrice.RecId        ==  OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                                   (OrderDocumentCouponsTransRemainPrice.CouponId    != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                                    OrderDocumentCouponsTransRemainPrice.CouponId    == OrderDocumentCouponsTrans.CouponId);
+    #
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.OrginalPrice;
+    #                                    }
+    #
+    #                                    OrderDocumentCouponsTrans.update();
+    #                                    ttscommit;
+    #                                }
+    #
+    #                            }//end of ibsOrderTrans loop
+    #                            //calculate total using RemainPrice
+    #                            select sum(RemainPrice) from OrderDocumentCouponsTransSumPrice
+    #                                where OrderDocumentCouponsTransSumPrice.CouponId == ibsOrderDocumentcoupons.CouponId;
+    #                            //Update new Table using RemainPrice
+    #                            while select forUpdate OrderDocumentCouponsTrans
+    #                                where OrderDocumentCouponsTrans.CouponId == ibsOrderDocumentcoupons.CouponId
+    #                            {
+    #                                ttsbegin;
+    #                                OrderDocumentCouponsTrans.TotalAmountCouponItems        =  OrderDocumentCouponsTransSumPrice.RemainPrice;//ibsOrderDocumentcoupons.EavWafCouponTotalItemBalance; //total price for all items in coupon
+    #                                OrderDocumentCouponsTrans.RatioPricePerCoupon           =  OrderDocumentCouponsTrans.RemainPrice / OrderDocumentCouponsTrans.TotalAmountCouponItems;
+    #                                OrderDocumentCouponsTrans.DiscAmountUsed                =  ibsCustCoupons::find(ibsOrderDocumentcoupons.CouponId).AmountMST * OrderDocumentCouponsTrans.RatioPricePerCoupon * -1 ; // * -1
+    #                                OrderDocumentCouponsTrans.AmountUsed                    =  OrderDocumentCouponsTrans.RemainPrice + OrderDocumentCouponsTrans.DiscAmountUsed;
+    #
+    #                                OrderDocumentCouponsTrans.update();
+    #                                ttscommit;
+    #                            }
+    #                        }
+    #                    }
+    #                    //-3 if No Apply for all items in Trans table
+    #                    else //
+    #                    {
+    #                        //1- Claculate total amount for all items per coupon
+    #
+    #                        //2- while select Items from ibsOrderTrans join CustCouponItem ExKlu
+    #                        while select ibsOrderTrans
+    #                            where ibsOrderTrans.OrderId         ==  ibsOrderDocumentCoupons.OrderId &&
+    #                                ibsOrderTrans.OrderDocumentId ==  ibsOrderDocumentCoupons.DocumentId &&
+    #                                ibsOrderTrans.OrderTransKind  !=  ibsOrderTransKind::Coupon
+    #                        {
+    #                            if(!EavOrderDocumentCouponsTrans::exist(ibsOrderTrans.OrderTransId,ibsOrderDocumentCoupons.CouponId))
+    #                            {
+    #                                // 3-select or while select NewTable to insert items  :(
+    #                                select forUpdate OrderDocumentCouponsTrans
+    #                                    order by recId Desc
+    #                                    where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId  ;
+    #                                // 4- TransId False
+    #                                if(!OrderDocumentCouponsTrans.OrderTransId)
+    #                                {
+    #                                    //this is our 1st coupon will be applied for this document,so OrginalPricee == RemainPrice
+    #                                    //insert
+    #                                    ttsbegin;
+    #                                    OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                    OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                    OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                    OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #                                    OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTrans.OrginalPrice;
+    #
+    #                                    OrderDocumentCouponsTrans.insert();
+    #                                    ttscommit;
+    #                                    //Remain fields will be updated code out of ibsOrderTrans loop
+    #                                }
+    #                                // 5- TransId true
+    #                                else
+    #                                {
+    #                                    // 6- TransId True with same Coupon imposible :D we can delete it TODO
+    #                                    // if(OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                    //     OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentcoupons.CouponId)
+    #                                    // {
+    #                                    //     //this is not 1st coupon,so
+    #                                    //     //update or ignore
+    #                                    //     //calculate RemainPrice
+    #                                    //     OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                    //     OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                    //     OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                    //     OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #
+    #                                    //     //RemainPrice
+    #                                    //     select OrderDocumentCouponsTransRemainPrice
+    #                                    //         order by RecId Desc
+    #                                    //         where OrderDocumentCouponsTransRemainPrice.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                    //                 OrderDocumentCouponsTransRemainPrice.RecId        <= OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                    //                 (OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                    //                 OrderDocumentCouponsTransRemainPrice.CouponId      == OrderDocumentCouponsTrans.CouponId);
+    #
+    #                                    //     OrderDocumentCouponsTrans.RemainPrice                       =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #                                    //     OrderDocumentCouponsTrans.TotalAmountCouponItems            =  ibsOrderTransSumPrice.LineAmount;//ibsOrderDocumentcoupons.EavWafCouponTotalItemBalance; //total price for all items in coupon
+    #                                    //     OrderDocumentCouponsTrans.RatioPricePerCoupon               =  OrderDocumentCouponsTrans.OrginalPrice / OrderDocumentCouponsTrans.TotalAmountCouponItems;
+    #                                    //     OrderDocumentCouponsTrans.DiscAmountUsed                    =  ibsCustCoupons::find(ibsOrderDocumentcoupons.CouponId).AmountMST * OrderDocumentCouponsTrans.RatioPricePerCoupon * -1 ; // * -1
+    #                                    //     OrderDocumentCouponsTrans.AmountUsed                        =  OrderDocumentCouponsTrans.RemainPrice + OrderDocumentCouponsTrans.DiscAmountUsed;
+    #
+    #                                    //     OrderDocumentCouponsTrans.update();
+    #                                    // }
+    #                                    // 7- TransId True with diffrent Coupon , so get last coupon applied to this item to get last RemainPrice
+    #                                    // else
+    #                                    // {
+    #
+    #                                    //insert
+    #                                    //calculate RemainPrice
+    #                                    OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                    OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                    OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                    OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #                                    //RemainPrice
+    #                                    select OrderDocumentCouponsTransRemainPrice
+    #                                        order by RecId Desc
+    #                                        where OrderDocumentCouponsTransRemainPrice.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                                OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId;
+    #
+    #                                    OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #
+    #                                    OrderDocumentCouponsTrans.insert();
+    #                                    //}
+    #                                }
+    #                            }
+    #                            //if TransId & CouponId Exists
+    #                            //Update new Table
+    #                            else
+    #                            {
+    #                                //1st select to update original price
+    #                                select forUpdate OrderDocumentCouponsTrans
+    #                                    where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                          OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentCoupons.CouponId;
+    #                                ttsbegin;
+    #                                //OrderDocumentCouponsTrans.OrderTransId                  =  ibsOrderTrans.OrderTransId;
+    #                                //OrderDocumentCouponsTrans.CouponId                      =  ibsOrderDocumentcoupons.CouponId;
+    #                                //OrderDocumentCouponsTrans.ItemId                        =  ibsOrderTrans.ItemId;
+    #                                OrderDocumentCouponsTrans.OrginalPrice                  =  ibsOrderTrans.SalesPrice;
+    #                                OrderDocumentCouponsTrans.update();
+    #                                ttscommit;
+    #                                //2nd select to get remainPrice from orignalPrice in recId == recId
+    #                                select forUpdate OrderDocumentCouponsTrans
+    #                                    where OrderDocumentCouponsTrans.OrderTransId == ibsOrderTrans.OrderTransId &&
+    #                                          OrderDocumentCouponsTrans.CouponId     == ibsOrderDocumentCoupons.CouponId;
+    #                                ttsbegin;
+    #                                //RemainPrice
+    #                                 select OrderDocumentCouponsTransRemainPrice
+    #                                         order by RecId Desc
+    #                                         where OrderDocumentCouponsTransRemainPrice.OrderTransId == OrderDocumentCouponsTrans.OrderTransId && //ibsOrderTrans.OrderTransId &&
+    #                                                 OrderDocumentCouponsTransRemainPrice.RecId      <  OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                                 (OrderDocumentCouponsTransRemainPrice.CouponId     != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                                 OrderDocumentCouponsTransRemainPrice.CouponId      == OrderDocumentCouponsTrans.CouponId);
+    #                                    if(OrderDocumentCouponsTransRemainPrice.RecId)
+    #                                    {
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.AmountUsed;
+    #                                    }
+    #                                    else
+    #                                    {
+    #                                        select OrderDocumentCouponsTransRemainPrice
+    #                                             order by RecId Desc
+    #                                             where OrderDocumentCouponsTransRemainPrice.OrderTransId == OrderDocumentCouponsTrans.OrderTransId && //ibsOrderTrans.OrderTransId &&
+    #                                                   OrderDocumentCouponsTransRemainPrice.RecId        ==  OrderDocumentCouponsTrans.RecId && //because this is update not insert so current remain should comming form recId less than Current
+    #                                                   (OrderDocumentCouponsTransRemainPrice.CouponId    != OrderDocumentCouponsTrans.CouponId || //if we have this only rec in whole table
+    #                                                    OrderDocumentCouponsTransRemainPrice.CouponId    == OrderDocumentCouponsTrans.CouponId);
+    #
+    #                                        OrderDocumentCouponsTrans.RemainPrice                   =  OrderDocumentCouponsTransRemainPrice.OrginalPrice;
+    #                                    }
+    #
+    #                                OrderDocumentCouponsTrans.update();
+    #                                ttscommit;
+    #                            }
+    #                        }//end of ibsOrderTrans loop
+    #                        //calculate total using RemainPrice
+    #                        select sum(RemainPrice) from OrderDocumentCouponsTransSumPrice
+    #                            where OrderDocumentCouponsTransSumPrice.CouponId == ibsOrderDocumentcoupons.CouponId;
+    #                        //Update new Table using RemainPrice
+    #                        while select forUpdate OrderDocumentCouponsTrans
+    #                            where OrderDocumentCouponsTrans.CouponId == ibsOrderDocumentcoupons.CouponId
+    #                        {
+    #                            ttsbegin;
+    #                            OrderDocumentCouponsTrans.TotalAmountCouponItems        =  OrderDocumentCouponsTransSumPrice.RemainPrice;//ibsOrderDocumentcoupons.EavWafCouponTotalItemBalance; //total price for all items in coupon
+    #                            OrderDocumentCouponsTrans.RatioPricePerCoupon           =  OrderDocumentCouponsTrans.RemainPrice / OrderDocumentCouponsTrans.TotalAmountCouponItems;
+    #                            OrderDocumentCouponsTrans.DiscAmountUsed                =  ibsCustCoupons::find(ibsOrderDocumentcoupons.CouponId).AmountMST * OrderDocumentCouponsTrans.RatioPricePerCoupon * -1 ; // * -1
+    #                            OrderDocumentCouponsTrans.AmountUsed                    =  OrderDocumentCouponsTrans.RemainPrice + OrderDocumentCouponsTrans.DiscAmountUsed;
+    #
+    #                            OrderDocumentCouponsTrans.update();
+    #                            ttscommit;
+    #                        }
+    #                    }
+    #                    //ttscommit;
+    #                }
+    #                catch
+    #                {
+    #                    throw error('something bad');
+    #                }
+    #            }
+    #        }
+    #    }
+    #}
+    #
+    #
+    #
+  ENDSOURCE
+
+***Element: END
